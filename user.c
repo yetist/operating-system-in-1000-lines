@@ -8,7 +8,7 @@ int syscall(int sysno, int arg0, int arg1, int arg2) {
     register int a2 __asm__("a2") = arg2;
     register int a3 __asm__("a3") = sysno;
 
-    __asm__ __volatile__("ecall"
+    __asm__ __volatile__("syscall 0"
                          : "=r"(a0)
                          : "r"(a0), "r"(a1), "r"(a2), "r"(a3)
                          : "memory");
@@ -37,11 +37,11 @@ __attribute__((noreturn)) void exit(void) {
     for (;;);
 }
 
-__attribute__((section(".text.start")))
-__attribute__((naked))
-void start(void) {
-    __asm__ __volatile__(
-        "mv sp, %[stack_top]\n"
-        "call main\n"
-        "call exit\n" ::[stack_top] "r"(__stack_top));
-}
+//__attribute__((section(".text.start")))
+//__attribute__((naked))
+//void start(void) {
+//    __asm__ __volatile__(
+//        "move $sp, %[stack_top]\n"
+//        "bl main\n"
+//        "bl exit\n" ::[stack_top] "r"(__stack_top));
+//}

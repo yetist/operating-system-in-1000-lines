@@ -8,7 +8,11 @@
 #define SATP_SV32 (1u << 31)
 #define SSTATUS_SPIE (1 << 5)
 #define SSTATUS_SUM  (1 << 18)
-#define SCAUSE_ECALL 8
+
+#define ESTAT_ECOCD_MASK    0x3f0000
+#define ESTAT_ESUBCOCD_MASK 0x7fc00000
+#define ESTAT_ECODE_SYS     0xb
+
 #define PAGE_V    (1 << 0)
 #define PAGE_R    (1 << 1)
 #define PAGE_W    (1 << 2)
@@ -45,7 +49,7 @@ struct process {
     int pid; // 0 if it's an idle process
     int state; // PROC_UNUSED, PROC_RUNNABLE, PROC_EXITED
     vaddr_t sp; // kernel stack pointer
-    uint32_t *page_table; // points to first level page table
+    uint64_t *page_table; // points to first level page table
     uint8_t stack[8192]; // kernel stack
 };
 
@@ -55,37 +59,38 @@ struct sbiret {
 };
 
 struct trap_frame {
-    uint32_t ra;
-    uint32_t gp;
-    uint32_t tp;
-    uint32_t t0;
-    uint32_t t1;
-    uint32_t t2;
-    uint32_t t3;
-    uint32_t t4;
-    uint32_t t5;
-    uint32_t t6;
-    uint32_t a0;
-    uint32_t a1;
-    uint32_t a2;
-    uint32_t a3;
-    uint32_t a4;
-    uint32_t a5;
-    uint32_t a6;
-    uint32_t a7;
-    uint32_t s0;
-    uint32_t s1;
-    uint32_t s2;
-    uint32_t s3;
-    uint32_t s4;
-    uint32_t s5;
-    uint32_t s6;
-    uint32_t s7;
-    uint32_t s8;
-    uint32_t s9;
-    uint32_t s10;
-    uint32_t s11;
-    uint32_t sp;
+    uint64_t zero;
+    uint64_t ra;
+    uint64_t tp;
+    uint64_t sp;
+    uint64_t a0;
+    uint64_t a1;
+    uint64_t a2;
+    uint64_t a3;
+    uint64_t a4;
+    uint64_t a5;
+    uint64_t a6;
+    uint64_t a7;
+    uint64_t t0;
+    uint64_t t1;
+    uint64_t t2;
+    uint64_t t3;
+    uint64_t t4;
+    uint64_t t5;
+    uint64_t t6;
+    uint64_t t7;
+    uint64_t t8;
+    uint64_t x;
+    uint64_t fp;
+    uint64_t s0;
+    uint64_t s1;
+    uint64_t s2;
+    uint64_t s3;
+    uint64_t s4;
+    uint64_t s5;
+    uint64_t s6;
+    uint64_t s7;
+    uint64_t s8;
 } __attribute__((packed));
 
 struct virtq_desc {
@@ -157,17 +162,20 @@ struct file {
     size_t size;
 };
 
+#define TO_STR_HELPER(x) #x
+#define TO_STR(x) TO_STR_HELPER(x)
+
 #define READ_CSR(reg)                                                          \
     ({                                                                         \
         unsigned long __tmp;                                                   \
-        __asm__ __volatile__("csrr %0, " #reg : "=r"(__tmp));                  \
+        __asm__ __volatile__("csrrd %0, " TO_STR(reg) : "=r"(__tmp));                  \
         __tmp;                                                                 \
     })
 
 #define WRITE_CSR(reg, value)                                                  \
     do {                                                                       \
-        uint32_t __tmp = (value);                                              \
-        __asm__ __volatile__("csrw " #reg ", %0" ::"r"(__tmp));                \
+        uint64_t __tmp = (value);                                              \
+        __asm__ __volatile__("csrwr %0, " TO_STR(reg) ::"r"(__tmp));                \
     } while (0)
 
 #define PANIC(fmt, ...)                                                        \
