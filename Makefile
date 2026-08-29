@@ -39,32 +39,35 @@ LDFLAGS := -Wl,-gc-sections -nostdlib -no-pie -fno-builtin -Wl,--gc-sections -Wl
 ## Build the kernel.
 #$CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf \
 #  kernel.c common.c shell.bin.o
-#
+
 all: shell.bin kernel.bin
 
 shell.elf: shell.o user.o common.o start.o
-	echo $(LD) -T user.ld -o $@ $^
-	$(LD) -T user.ld -o $@ $^
+	@echo [LD] $@
+	@$(LD) -T user.ld -o $@ $^
 
 kernel.elf: kernel.o common.o boot.o shell.bin.o
-	$(LD) -T kernel.ld -o $@ $^
+	@echo [LD] $@
+	@$(LD) -T kernel.ld -o $@ $^
+	@$(OBJDUMP) -d $@ > kernel.objdump
 
 shell.bin.o: shell.bin
-	$(OBJCOPY) -Ibinary -Oelf64-loongarch shell.bin shell.bin.o
+	@$(OBJCOPY) -Ibinary -Oelf64-loongarch shell.bin shell.bin.o
 
 %.bin: %.elf
-	$(OBJCOPY) -O binary $< $@
+	@echo [OBJCOPY] $@
+	@$(OBJCOPY) -O binary $< $@
 
 %.o : %.S
 	@echo [AS] $<
-	$(CC) $(ASFLAGS) -MD -MP -MF $@.d -c $< -o $@
+	@$(CC) $(ASFLAGS) -MD -MP -MF $@.d -c $< -o $@
 
 %.o : %.c
 	@echo [CC] $<
-	$(CC) $(CFLAGS) -MD -MP -MF $@.d -c $< -o $@
+	@$(CC) $(CFLAGS) -MD -MP -MF $@.d -c $< -o $@
 
-run: $(X_ELF)
-	$(QEMU) \
+run: kernel.elf
+	@$(QEMU) \
 		-m 1G \
 		-cpu la464 \
 		-machine virt \
@@ -72,7 +75,7 @@ run: $(X_ELF)
 		-nographic \
 		-kernel kernel.elf
 
-gdbrun: $(X_ELF)
+gdbrun: kernel.elf
 	$(QEMU) \
 		-m 1G \
 		-cpu la464 \

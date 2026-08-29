@@ -42,8 +42,6 @@ typedef uint32_t            vaddr_t;
 #define SYS_READFILE  4
 #define SYS_WRITEFILE 5
 
-#define BIT(x)          (1<<(x))
-
 #define DBAR(hint) __asm__ __volatile__("dbar %0 " : : "I"(hint) : "memory")
 #define rmb()   DBAR(0b00101)
 #define wmb()   DBAR(0b01010)

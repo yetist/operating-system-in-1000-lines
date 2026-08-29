@@ -3,21 +3,20 @@
 .section .text.boot
 .global boot
 boot:
-    li.d        $t0, 0x8000000000000001 # UC, PLV0, 0x8000 xxxx xxxx xxxx
-    csrwr       $t0, 0x180
-    li.d        $t0, 0x9000000000000011 # CA, PLV0, 0x9000 xxxx xxxx xxxx
-    csrwr       $t0, 0x181
+  li.d    $t0, 0x8000000000000001 # UC, PLV0, 0x8000 xxxx xxxx xxxx
+  csrwr   $t0, 0x180
+  li.d    $t0, 0x9000000000000011 # CA, PLV0, 0x9000 xxxx xxxx xxxx
+  csrwr   $t0, 0x181
 
-    la          $ra, .jump_to_64bit_addr
-    ret
+  la      $ra, .jump_to_64bit_addr
+  ret
 
 .jump_to_64bit_addr:
-    la.abs      $sp, __stack_top
-    bl          kernel_main
+  la      $sp, __stack_top
+  bl      kernel_main
 
 .text
 .global kernel_entry
-.align 4
 kernel_entry:
   csrwr   $sp, LOONGARCH_CSR_SAVE0
   csrrd   $sp, LOONGARCH_CSR_SAVE0    # Read the old stack pointer.
@@ -84,7 +83,7 @@ kernel_entry:
   ld.d    $t6, $sp, 18 * 8
   ld.d    $t7, $sp, 19 * 8
   ld.d    $t8, $sp, 20 * 8
-  ld.d    $r21, $sp, 21 * 8
+  ld.d    $r21,$sp, 21 * 8
   ld.d    $fp, $sp, 22 * 8
   ld.d    $s0, $sp, 23 * 8
   ld.d    $s1, $sp, 24 * 8
@@ -101,42 +100,44 @@ kernel_entry:
 
 .global user_entry
 user_entry:
-        idle 0
-        #csrw sepc, USER_BASE
-        #csrw sstatus, SSTATUS_SPIE | SSTATUS_SUM
-        #sret
+  idle 0
+# la    $t0, USER_BASE
+# csrwr $t0, 0x6
+  #csrw sepc, USER_BASE
+  #csrw sstatus, SSTATUS_SPIE | SSTATUS_SUM
+  #sret
 
-##void switch_context(uint32_t *prev_sp, uint32_t *next_sp)
-#.global switch_context
-#switch_context:
-#        "addi sp, sp, -13 * 4\n"
-#        "sw ra,  0  * 4(sp)\n"
-#        "sw s0,  1  * 4(sp)\n"
-#        "sw s1,  2  * 4(sp)\n"
-#        "sw s2,  3  * 4(sp)\n"
-#        "sw s3,  4  * 4(sp)\n"
-#        "sw s4,  5  * 4(sp)\n"
-#        "sw s5,  6  * 4(sp)\n"
-#        "sw s6,  7  * 4(sp)\n"
-#        "sw s7,  8  * 4(sp)\n"
-#        "sw s8,  9  * 4(sp)\n"
-#        "sw s9,  10 * 4(sp)\n"
-#        "sw s10, 11 * 4(sp)\n"
-#        "sw s11, 12 * 4(sp)\n"
-#        "sw sp, (a0)\n"
-#        "lw sp, (a1)\n"
-#        "lw ra,  0  * 4(sp)\n"
-#        "lw s0,  1  * 4(sp)\n"
-#        "lw s1,  2  * 4(sp)\n"
-#        "lw s2,  3  * 4(sp)\n"
-#        "lw s3,  4  * 4(sp)\n"
-#        "lw s4,  5  * 4(sp)\n"
-#        "lw s5,  6  * 4(sp)\n"
-#        "lw s6,  7  * 4(sp)\n"
-#        "lw s7,  8  * 4(sp)\n"
-#        "lw s8,  9  * 4(sp)\n"
-#        "lw s9,  10 * 4(sp)\n"
-#        "lw s10, 11 * 4(sp)\n"
-#        "lw s11, 12 * 4(sp)\n"
-#        "addi sp, sp, 13 * 4\n"
-#        "ret\n"
+#void switch_context(uint64_t *prev_sp, uint64_t *next_sp)
+.global switch_context
+switch_context:
+  # 将被调用者保存寄存器保存到当前进程的栈上
+  addi.d  $sp, $sp, -10 * 8 # 为10个8字节寄存器分配栈空间
+  st.d    $ra, $sp, 0 * 8   # 仅保存被调用者保存的寄存器
+  st.d    $s0, $sp, 1 * 8
+  st.d    $s1, $sp, 2 * 8
+  st.d    $s2, $sp, 3 * 8
+  st.d    $s3, $sp, 4 * 8
+  st.d    $s4, $sp, 5 * 8
+  st.d    $s5, $sp, 6 * 8
+  st.d    $s6, $sp, 7 * 8
+  st.d    $s7, $sp, 8 * 8
+  st.d    $s8, $sp, 9 * 8
+
+  # 切换栈指针
+  st.d   $sp, $a0, 0        # *prev_sp = sp;
+  ld.d   $sp, $a1, 0        # 在这里切换栈指针sp
+
+  # 从下一个进程的栈中恢复被调用者保存的寄存器
+  ld.d   $ra, $sp, 0 * 8    # 仅恢复被调用者保存的寄存器
+  ld.d   $s0, $sp, 1 * 8
+  ld.d   $s1, $sp, 2 * 8
+  ld.d   $s2, $sp, 3 * 8
+  ld.d   $s3, $sp, 4 * 8
+  ld.d   $s4, $sp, 5 * 8
+  ld.d   $s5, $sp, 6 * 8
+  ld.d   $s6, $sp, 7 * 8
+  ld.d   $s7, $sp, 8 * 8
+  ld.d   $s8, $sp, 9 * 8
+
+  addi.d $sp, $sp, 10 * 8   # 我们已从栈中弹出10个8字节寄存器
+  ret

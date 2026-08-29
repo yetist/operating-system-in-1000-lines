@@ -1,5 +1,7 @@
 #include "common.h"
 
+extern void putchar(char ch);
+
 void *memset(void *buf, char c, size_t n) {
     uint8_t *p = (uint8_t *) buf;
     while (n--)
@@ -34,9 +36,35 @@ int strcmp(const char *s1, const char *s2) {
     return *(unsigned char *)s1 - *(unsigned char *)s2;
 }
 
-extern void putchar(char ch);
+static void print_binary(unsigned int num)
+{
+    putchar('0');
+    putchar('b');
 
-void printf(const char *fmt, ...) {
+    // 如果是 0，直接打印并返回
+    if (num == 0) {
+        putchar('0');
+        return;
+    }
+
+    // 寻找最高位的 1，跳过前面的前导 0（可选，让输出更紧凑）
+    int start_bit = 31;
+    while ((start_bit >= 0) && !((num >> start_bit) & 1)) {
+        start_bit--;
+    }
+
+    // 从最高有效位开始，逐位打印 '0' 或 '1'
+    for (int i = start_bit; i >= 0; i--) {
+        char bit = ((num >> i) & 1) ? '1' : '0';
+        putchar(bit);
+        if ((i % 4 == 0) && (i != 0)) {
+            putchar('_');
+        }
+    }
+}
+
+void printf(const char *fmt, ...)
+{
     va_list vargs;
     va_start(vargs, fmt);
     while (*fmt) {
@@ -58,8 +86,8 @@ void printf(const char *fmt, ...) {
                     break;
                 }
                 case 'd': {
-                    int value = va_arg(vargs, int);
-                    unsigned magnitude = value;
+					int value = va_arg(vargs, int);
+					unsigned magnitude = value;
                     if (value < 0) {
                         putchar('-');
                         magnitude = -magnitude;
@@ -75,6 +103,11 @@ void printf(const char *fmt, ...) {
                         divisor /= 10;
                     }
 
+                    break;
+                }
+                case 'b': {
+                    unsigned value = va_arg(vargs, unsigned);
+                    print_binary(value);
                     break;
                 }
                 case 'x': {
