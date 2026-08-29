@@ -65,15 +65,15 @@ paddr_t blk_req_paddr;
 uint64_t blk_capacity;
 
 uint32_t virtio_reg_read32(unsigned offset) {
-    return *((volatile uint32_t *) (VIRTIO_BLK_PADDR + offset));
+    return *((volatile uint32_t *)(uintptr_t)(VIRTIO_BLK_PADDR + offset));
 }
 
 uint64_t virtio_reg_read64(unsigned offset) {
-    return *((volatile uint64_t *) (VIRTIO_BLK_PADDR + offset));
+    return *((volatile uint64_t *)(uintptr_t) (VIRTIO_BLK_PADDR + offset));
 }
 
 void virtio_reg_write32(unsigned offset, uint32_t value) {
-    *((volatile uint32_t *) (VIRTIO_BLK_PADDR + offset)) = value;
+    *((volatile uint32_t *)(uintptr_t) (VIRTIO_BLK_PADDR + offset)) = value;
 }
 
 void virtio_reg_fetch_and_or32(unsigned offset, uint32_t value) {
@@ -95,8 +95,9 @@ void virtq_kick(struct virtio_virtq *vq, int desc_index) {
 struct virtio_virtq *virtq_init(unsigned index) {
     paddr_t virtq_paddr = alloc_pages(align_up(sizeof(struct virtio_virtq), PAGE_SIZE) / PAGE_SIZE);
     struct virtio_virtq *vq = (struct virtio_virtq *) virtq_paddr;
+	uint16_t used_index = vq->used.index;
     vq->queue_index = index;
-    vq->used_index = (volatile uint16_t *) &vq->used.index;
+    vq->used_index = (volatile uint16_t *) &used_index;
     virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index);
     virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_ENTRY_NUM);
     virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, virtq_paddr / PAGE_SIZE);
@@ -375,7 +376,7 @@ void handle_syscall(struct trap_frame *f) {
         case SYS_WRITEFILE: {
             const char *filename = (const char *) f->a0;
             char *buf = (char *) f->a1;
-            int len = f->a2;
+            size_t len = f->a2;
             struct file *file = fs_lookup(filename);
             if (!file) {
                 printf("file not found: %s\n", filename);
@@ -383,7 +384,7 @@ void handle_syscall(struct trap_frame *f) {
                 break;
             }
 
-            if (len > (int) sizeof(file->data))
+            if (len > sizeof(file->data))
                 len = file->size;
 
             if (f->a3 == SYS_WRITEFILE) {
@@ -418,7 +419,7 @@ void handle_trap(struct trap_frame *f)
 		handle_syscall(f);
 		era += 4;
 	} else {
-		PANIC("unexpected trap, estat=%b, ecode=%x, era=0x%x, badv=0x%x, badi=0x%x\n", estat, ecode, era, badv, badi);
+		PANIC("unexpected trap, estat=%b, ecode=%x, esubcode=%x\n\tera=0x%x, badv=0x%x, badi=0x%x\n", estat, ecode, esubcode, era, badv, badi);
 	}
 	printf("fininsh haldle_trap\n");
 

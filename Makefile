@@ -15,36 +15,18 @@ AS      := $(CROSS_COMPILE)as
 OBJCOPY := $(CROSS_COMPILE)objcopy
 OBJDUMP := $(CROSS_COMPILE)objdump
 
-MCFLAGS := -march=loongarch64 -mabi=lp64s -fno-stack-protector -mstrict-align
-CFLAGS  := -g -ggdb -Wall -O2 -ffreestanding $(MCFLAGS) -fno-pie
-#LDFLAGS := -T board/$(BOARD)/board.ld -nostdlib -no-pie -fno-builtin -Wl,--gc-sections -Wl,--no-warn-rwx-segments
-
-#CFLAGS  := -g -ggdb -Wall -O0 -fno-stack-protector -ffreestanding -nostdlib -fno-builtin -std=gnu99 -march=loongarch64 -mabi=lp64s
-ASFLAGS := -g -ggdb -Wall -O0 $(MCFLAGS) -fno-pie
-
-ASFLAGS += -ffunction-sections -fdata-sections -ffreestanding -std=gnu99
-CFLAGS		+=	-ffunction-sections -fdata-sections -ffreestanding -std=gnu99 $(DEFINES)
-LDFLAGS		+=	-Wl,-gc-sections
-
-LDFLAGS := -Wl,-gc-sections -nostdlib -no-pie -fno-builtin -Wl,--gc-sections -Wl,--no-warn-rwx-segments
-
-#CFLAGS="-std=c11 -O2 -g3 -Wall -Wextra --target=loongarch64-unknown-elf -fuse-ld=lld -fno-stack-protector -ffreestanding -nostdlib"
-
-## Build the shell.
-#$CC $CFLAGS -Wl,-Tuser.ld -Wl,-Map=shell.map -o shell.elf shell.c user.c common.c
-#
-#
-#$OBJCOPY -Ibinary -Oelf32-littleriscv shell.bin shell.bin.o
-#
-## Build the kernel.
-#$CC $CFLAGS -Wl,-Tkernel.ld -Wl,-Map=kernel.map -o kernel.elf \
-#  kernel.c common.c shell.bin.o
+MCFLAGS := -march=loongarch64 -mabi=lp64s -fno-stack-protector -ffreestanding -mstrict-align \
+		   -fno-pie -ffunction-sections -fdata-sections -std=gnu99
+CFLAGS  := -g -ggdb -Wall -Wextra -O2 $(MCFLAGS)
+ASFLAGS := -g -ggdb -Wall -Wextra -O0 $(MCFLAGS)
+LDFLAGS := -nostdlib -fno-builtin -no-pie -Wl,-gc-sections -Wl,--no-warn-rwx-segments
 
 all: shell.bin kernel.bin
 
 shell.elf: shell.o user.o common.o start.o
 	@echo [LD] $@
 	@$(LD) -T user.ld -o $@ $^
+	@$(OBJDUMP) -d $@ > shell.objdump
 
 kernel.elf: kernel.o common.o boot.o shell.bin.o
 	@echo [LD] $@
@@ -66,21 +48,34 @@ shell.bin.o: shell.bin
 	@echo [CC] $<
 	@$(CC) $(CFLAGS) -MD -MP -MF $@.d -c $< -o $@
 
-run: kernel.elf
+disk.tar:
+	(cd disk && tar cf ../disk.tar --format=ustar *.txt)
+
+run: kernel.elf disk.tar
 	@$(QEMU) \
 		-m 1G \
 		-cpu la464 \
 		-machine virt \
 		-smp 1 \
 		-nographic \
+		-d unimp,guest_errors,int,cpu_reset \
+		-D qemu.log \
+		-drive id=drive0,file=disk.tar,format=raw,if=none \
+		-device virtio-blk-pci,drive=drive0 \
+		-rtc base=localtime \
 		-kernel kernel.elf
 
-gdbrun: kernel.elf
-	$(QEMU) \
+debug: kernel.elf disk.tar
+	@$(QEMU) \
 		-m 1G \
 		-cpu la464 \
 		-machine virt \
-		-smp 1 -nographic \
+		-smp 1 \
+		-nographic \
+		-d unimp,guest_errors,int,cpu_reset \
+		-D qemu.log \
+		-drive id=drive0,file=disk.tar,format=raw,if=none \
+		-device virtio-blk-pci,drive=drive0 \
 		-S -gdb tcp::1234,ipv4 \
 		-rtc base=localtime \
 		-kernel kernel.elf
