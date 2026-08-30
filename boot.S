@@ -1,19 +1,42 @@
+.equ LOONGARCH_CSR_CRMD,  0x0
+.equ LOONGARCH_CSR_PRMD,  0x1
+.equ LOONGARCH_CSR_EUEN,  0x2
 .equ LOONGARCH_CSR_SAVE0, 0x30
+.equ LOONGARCH_CSR_DMW0, 0x180
+.equ LOONGARCH_CSR_DMW1, 0x181
 
 .section .text.boot
 .global boot
+.align 2
 boot:
-  li.d    $t0, 0x8000000000000001 # UC, PLV0, 0x8000 xxxx xxxx xxxx
-  csrwr   $t0, 0x180
-  li.d    $t0, 0x9000000000000011 # CA, PLV0, 0x9000 xxxx xxxx xxxx
-  csrwr   $t0, 0x181
+  .cfi_startproc;
+  li.d    $t0, (0x8000 << 48 | 0x1)     # UC, PLV0, 0x8000 xxxx xxxx xxxx
+  csrwr   $t0, LOONGARCH_CSR_DMW0
+  li.d    $t0, (0x9000 << 48 | 0x11)    # CA, PLV0, 0x9000 xxxx xxxx xxxx
+  csrwr   $t0, LOONGARCH_CSR_DMW1
 
-  la      $ra, .jump_to_64bit_addr
-  ret
+  # jump_to_virt_addr
+  li.d    $t0, (0x9000 << 48)
+  pcaddi  $t1, 0
+  or      $t0, $t0, $t1
+  jirl    $zero, $t0, 0xc
 
-.jump_to_64bit_addr:
+  /* Enable PG */
+  li.w    $t0, 0b10110000   # PLV[1:0]=0, IE[2]=0, PG[4]=1, DATF[6:5]=1, DATM[8:7]=1(一致可缓存)
+  csrwr   $t0, LOONGARCH_CSR_CRMD
+  li.w    $t0, 0b0100       # PPLV[1:0]=0, PIE[2]=1, PWE[3]=0
+  csrwr   $t0, LOONGARCH_CSR_PRMD
+  li.w    $t0, 0x0          # FPE[0]=0, SXE[1]=0, ASXE[2]=0, BTE[3]=0
+  csrwr   $t0, LOONGARCH_CSR_EUEN
+
+  /* Save0 used for percpu base, initialized as 0 */
+  csrwr   $zero, LOONGARCH_CSR_SAVE0
   la      $sp, __stack_top
   bl      kernel_main
+  break 1
+.cfi_endproc;
+.type boot @notype
+.size boot, .-boot;
 
 .text
 .global kernel_entry
@@ -96,7 +119,8 @@ kernel_entry:
   ld.d    $s8, $sp, 31 * 8
   ld.d    $sp, $sp, 3 * 8
 
-  ertn // Return from exception.
+  # Return from exception.
+  ertn
 
 .global user_entry
 user_entry:

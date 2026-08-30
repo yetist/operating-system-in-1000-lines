@@ -69,11 +69,11 @@ uint32_t virtio_reg_read32(unsigned offset) {
 }
 
 uint64_t virtio_reg_read64(unsigned offset) {
-    return *((volatile uint64_t *)(uintptr_t) (VIRTIO_BLK_PADDR + offset));
+    return *((volatile uint64_t *)(uintptr_t)(VIRTIO_BLK_PADDR + offset));
 }
 
 void virtio_reg_write32(unsigned offset, uint32_t value) {
-    *((volatile uint32_t *)(uintptr_t) (VIRTIO_BLK_PADDR + offset)) = value;
+    *((volatile uint32_t *)(uintptr_t)(VIRTIO_BLK_PADDR + offset)) = value;
 }
 
 void virtio_reg_fetch_and_or32(unsigned offset, uint32_t value) {
@@ -223,30 +223,30 @@ void fs_flush(void) {
     printf("wrote %d bytes to disk\n", sizeof(disk));
 }
 
-//void fs_init(void) {
-//    for (unsigned sector = 0; sector < sizeof(disk) / SECTOR_SIZE; sector++)
-//        read_write_disk(&disk[sector * SECTOR_SIZE], sector, false);
-//
-//    unsigned off = 0;
-//    for (int i = 0; i < FILES_MAX; i++) {
-//        struct tar_header *header = (struct tar_header *) &disk[off];
-//        if (header->name[0] == '\0')
-//            break;
-//
-//        if (strcmp(header->magic, "ustar") != 0)
-//            PANIC("invalid tar header: magic=\"%s\"", header->magic);
-//
-//        int filesz = oct2int(header->size, sizeof(header->size));
-//        struct file *file = &files[i];
-//        file->in_use = true;
-//        strcpy(file->name, header->name);
-//        memcpy(file->data, header->data, filesz);
-//        file->size = filesz;
-//        printf("file: %s, size=%d\n", file->name, file->size);
-//
-//        off += align_up(sizeof(struct tar_header) + filesz, SECTOR_SIZE);
-//    }
-//}
+void fs_init(void) {
+    for (unsigned sector = 0; sector < sizeof(disk) / SECTOR_SIZE; sector++)
+        read_write_disk(&disk[sector * SECTOR_SIZE], sector, false);
+
+    unsigned off = 0;
+    for (int i = 0; i < FILES_MAX; i++) {
+        struct tar_header *header = (struct tar_header *) &disk[off];
+        if (header->name[0] == '\0')
+            break;
+
+        if (strcmp(header->magic, "ustar") != 0)
+            PANIC("invalid tar header: magic=\"%s\"", header->magic);
+
+        int filesz = oct2int(header->size, sizeof(header->size));
+        struct file *file = &files[i];
+        file->in_use = true;
+        strcpy(file->name, header->name);
+        memcpy(file->data, header->data, filesz);
+        file->size = filesz;
+        printf("file: %s, size=%d\n", file->name, file->size);
+
+        off += align_up(sizeof(struct tar_header) + filesz, SECTOR_SIZE);
+    }
+}
 
 struct file *fs_lookup(const char *filename) {
     for (int i = 0; i < FILES_MAX; i++) {
@@ -466,7 +466,7 @@ void proc_b_entry(void) {
 
 void kernel_main(void) {
     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
-    printf("Hello, world!\n");
+    printf("\n1000 Lines OS on LoongArch!\n\n");
     WRITE_CSR(LOONGARCH_CSR_EENTRY, (uint64_t) kernel_entry);
 
 	// test begin
@@ -484,7 +484,7 @@ void kernel_main(void) {
 	//    proc_b = create_process((uint64_t) proc_b_entry);
 	//    proc_a_entry();
 
-   __asm__ __volatile__("break 1"); // 测试异常
+//   __asm__ __volatile__("break 1"); // 测试异常
 //    virtio_blk_init();
 //    fs_init();
 
