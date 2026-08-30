@@ -488,9 +488,9 @@ void kernel_main(void) {
 //    virtio_blk_init();
 //    fs_init();
 
-//    idle_proc = create_process(NULL, 0);
-//    idle_proc->pid = 0; // idle
-//    current_proc = idle_proc;
+    idle_proc = create_process(NULL, 0);
+    idle_proc->pid = 0; // idle
+    current_proc = idle_proc;
 
 //    create_process(_binary_shell_bin_start, (size_t) _binary_shell_bin_size);
     yield();

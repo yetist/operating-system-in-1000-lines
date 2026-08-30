@@ -58,8 +58,6 @@ run: kernel.elf disk.tar
 		-machine virt \
 		-smp 1 \
 		-nographic \
-		-d unimp,guest_errors,int,cpu_reset \
-		-D qemu.log \
 		-drive id=drive0,file=disk.tar,format=raw,if=none \
 		-device virtio-blk-pci,drive=drive0 \
 		-rtc base=localtime \
