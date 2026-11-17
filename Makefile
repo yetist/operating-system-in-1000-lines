@@ -33,6 +33,10 @@ kernel.elf: kernel.o common.o boot.o shell.bin.o
 	@$(LD) -T kernel.ld -o $@ $^
 	@$(OBJDUMP) -d $@ > kernel.objdump
 
+shell.bin: shell.elf
+	@echo [OBJCOPY] $@
+	@$(OBJCOPY) --set-section-flags .bss=alloc,contents -O binary $< $@
+
 shell.bin.o: shell.bin
 	@$(OBJCOPY) -Ibinary -Oelf64-loongarch shell.bin shell.bin.o
 
@@ -77,6 +81,8 @@ debug: kernel.elf disk.tar
 		-S -gdb tcp::1234,ipv4 \
 		-rtc base=localtime \
 		-kernel kernel.elf
+
+-include $(wildcard *.o.d)
 
 .PHONY: clean
 

@@ -1,8 +1,10 @@
 *.map
 *.tar
 *.o
+*.o.d
 *.elf
 *.bin
 *.log
 *.pcap
 *.epub
+*.objdump

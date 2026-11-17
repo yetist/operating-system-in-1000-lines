@@ -30,9 +30,7 @@ SECTIONS {
         *(.bss .bss.* .sbss .sbss.*);
 
         /*
-         * RISC-V ABI requires 16-byte alignment for the stack.
-         *
-         * https://github.com/nuta/operating-system-in-1000-lines/pull/23
+         * Keep the stack 16-byte aligned (LoongArch ABI).
          */
         . = ALIGN(16);
         . += 64 * 1024; /* 64KB stack space */
