@@ -205,7 +205,8 @@ user_entry:
  */
 .global switch_context
 switch_context:
-  addi.d  $sp, $sp, -12 * 8
+  # 将被调用者保存寄存器保存到当前进程的栈上
+  addi.d  $sp, $sp, -12 * 8		# 为12个8字节寄存器分配栈空间
   st.d    $ra, $sp, 0 * 8
   st.d    $tp, $sp, 1 * 8
   st.d    $fp, $sp, 2 * 8
@@ -219,9 +220,11 @@ switch_context:
   st.d    $s7, $sp, 10 * 8
   st.d    $s8, $sp, 11 * 8
 
-  st.d    $sp, $a0, 0
-  ld.d    $sp, $a1, 0
+  # 切换栈指针
+  st.d    $sp, $a0, 0			# *prev_sp = sp;
+  ld.d    $sp, $a1, 0			# 在这里切换栈指针sp
 
+  # 从下一个进程的栈中恢复被调用者保存的寄存器
   ld.d    $ra, $sp, 0 * 8
   ld.d    $tp, $sp, 1 * 8
   ld.d    $fp, $sp, 2 * 8
@@ -235,5 +238,5 @@ switch_context:
   ld.d    $s7, $sp, 10 * 8
   ld.d    $s8, $sp, 11 * 8
 
-  addi.d  $sp, $sp, 12 * 8
+  addi.d  $sp, $sp, 12 * 8		# 我们已从栈中弹出12个8字节寄存器
   ret
