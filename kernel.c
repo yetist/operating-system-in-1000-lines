@@ -1,13 +1,12 @@
 #include "kernel.h"
 #include "common.h"
 
-extern char __kernel_base[];
-extern char __stack_top[];
 extern char __bss[], __bss_end[];
 extern char __free_ram[], __free_ram_end[];
 extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
 
-extern void kernel_entry(void);
+extern char exception_vectors[];
+extern char tlb_refill[];
 extern void user_entry(void);
 extern void switch_context(uint64_t *prev_sp, uint64_t *next_sp);
 
@@ -15,18 +14,28 @@ struct process procs[PROCS_MAX];
 struct process *current_proc;
 struct process *idle_proc;
 
-#define LOONGARCH_CSR_ECFG    0x4
-#define LOONGARCH_CSR_ESTAT   0x5
-#define LOONGARCH_CSR_ERA     0x6
-#define LOONGARCH_CSR_BADV    0x7
-#define LOONGARCH_CSR_BADI    0x8
-#define LOONGARCH_CSR_EENTRY  0xc
-
-#define UART_BASE_ADDR  0x800000001fe001e0ULL
+#define UART_BASE       0x1fe001e0UL
 #define UART_REG_LSR    0x5       // 线路状态寄存器
 #define LSR_DR          (1<<0)    // 接收数据有效位, 1为有数据
 #define LSR_TFE         (1<<5)    // 传输FIFO位空表示位, 1为空
 
+/*
+ * Physical address of the I/O BAR assigned to our virtio-blk device.
+ *
+ * The loongarch "virt" machine exposes PCI I/O space at 0x18004000
+ * (the window starts at PCI I/O address 0x4000), so BAR0 is programmed
+ * to 0x4100 and the CPU accesses the legacy virtio registers through
+ * the uncached direct-map window.
+ */
+#define VIRTIO_BLK_IO_ADDR  0x18004100UL
+#define VIRTIO_BLK_IO_BAR   0x4101UL
+
+/*
+ * Allocate zeroed pages from the free RAM region.  The returned address
+ * is a kernel virtual address in the cached DMW1 window; use
+ * virt_to_phys() when it has to be handed to hardware (page tables,
+ * virtio descriptors, ...).
+ */
 paddr_t alloc_pages(uint64_t n)
 {
     static paddr_t next_paddr = (paddr_t) __free_ram;
@@ -40,7 +49,7 @@ paddr_t alloc_pages(uint64_t n)
     return paddr;
 }
 
-void map_page(uint64_t *table1, uint64_t vaddr, paddr_t paddr, uint64_t flags)
+void map_page(uint64_t *pgd, uint64_t vaddr, paddr_t paddr, uint64_t flags)
 {
     if (!is_aligned(vaddr, PAGE_SIZE))
         PANIC("unaligned vaddr %x", vaddr);
@@ -48,15 +57,57 @@ void map_page(uint64_t *table1, uint64_t vaddr, paddr_t paddr, uint64_t flags)
     if (!is_aligned(paddr, PAGE_SIZE))
         PANIC("unaligned paddr %x", paddr);
 
-    uint64_t vpn1 = (vaddr >> 22) & 0x3ff;
-    if ((table1[vpn1] & PAGE_V) == 0) {
-        uint64_t pt_paddr = alloc_pages(1);
-        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    uint32_t pgd_i = (vaddr >> PT_PGD_SHIFT) & 0x1ff;
+    if (pgd[pgd_i] == 0) {
+        paddr_t pmd_paddr = virt_to_phys(alloc_pages(1));
+        pgd[pgd_i] = pmd_paddr;
     }
 
-    uint64_t vpn0 = (vaddr >> 12) & 0x3ff;
-    uint64_t *table0 = (uint64_t *) ((table1[vpn1] >> 10) * PAGE_SIZE);
-    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
+    uint64_t *pmd = (uint64_t *) (uintptr_t) phys_to_virt(pgd[pgd_i]);
+    uint32_t pmd_i = (vaddr >> PT_PMD_SHIFT) & 0x1ff;
+    if (pmd[pmd_i] == 0) {
+        paddr_t pte_paddr = virt_to_phys(alloc_pages(1));
+        pmd[pmd_i] = pte_paddr;
+    }
+
+    uint64_t *pte = (uint64_t *) (uintptr_t) phys_to_virt(pmd[pmd_i]);
+    uint32_t pte_i = (vaddr >> PT_PTE_SHIFT) & 0x1ff;
+    pte[pte_i] = (virt_to_phys(paddr) & ~(PAGE_SIZE - 1)) | flags;
+}
+
+/*
+ * Minimal PCI support: scan the ECAM configuration space on bus 0 and
+ * assign an I/O BAR to the legacy virtio-blk device.
+ */
+static uint32_t pci_config_addr(int bus, int dev, int fn, int off)
+{
+    return PCI_ECAM_BASE + (bus << 20) + (dev << 15) + (fn << 12) + off;
+}
+
+static uint32_t pci_read32(int bus, int dev, int fn, int off)
+{
+    return read32(pci_config_addr(bus, dev, fn, off));
+}
+
+static void pci_write32(int bus, int dev, int fn, int off, uint32_t value)
+{
+    write32(pci_config_addr(bus, dev, fn, off), value);
+}
+
+static bool pci_find_virtio_blk(int *out_bus, int *out_dev)
+{
+    for (int dev = 0; dev < 32; dev++) {
+        uint32_t id = pci_read32(0, dev, 0, 0x00);
+        uint16_t vendor = id & 0xffff;
+        uint16_t device = id >> 16;
+
+        if (vendor == 0x1af4 && device == 0x1001) {
+            *out_bus = 0;
+            *out_dev = dev;
+            return true;
+        }
+    }
+    return false;
 }
 
 struct virtio_virtq *blk_request_vq;
@@ -64,72 +115,87 @@ struct virtio_blk_req *blk_req;
 paddr_t blk_req_paddr;
 uint64_t blk_capacity;
 
-uint32_t virtio_reg_read32(unsigned offset) {
-    return *((volatile uint32_t *)(uintptr_t)(VIRTIO_BLK_PADDR + offset));
-}
-
-uint64_t virtio_reg_read64(unsigned offset) {
-    return *((volatile uint64_t *)(uintptr_t)(VIRTIO_BLK_PADDR + offset));
-}
-
-void virtio_reg_write32(unsigned offset, uint32_t value) {
-    *((volatile uint32_t *)(uintptr_t)(VIRTIO_BLK_PADDR + offset)) = value;
-}
-
-void virtio_reg_fetch_and_or32(unsigned offset, uint32_t value) {
-    virtio_reg_write32(offset, virtio_reg_read32(offset) | value);
-}
-
-bool virtq_is_busy(struct virtio_virtq *vq) {
+static bool virtq_is_busy(struct virtio_virtq *vq)
+{
     return vq->last_used_index != *vq->used_index;
 }
 
-void virtq_kick(struct virtio_virtq *vq, int desc_index) {
+static void virtq_kick(struct virtio_virtq *vq, int desc_index)
+{
     vq->avail.ring[vq->avail.index % VIRTQ_ENTRY_NUM] = desc_index;
     vq->avail.index++;
     __sync_synchronize();
-    virtio_reg_write32(VIRTIO_REG_QUEUE_NOTIFY, vq->queue_index);
+    write16(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_QUEUE_NOTIFY, vq->queue_index);
     vq->last_used_index++;
 }
 
-struct virtio_virtq *virtq_init(unsigned index) {
-    paddr_t virtq_paddr = alloc_pages(align_up(sizeof(struct virtio_virtq), PAGE_SIZE) / PAGE_SIZE);
-    struct virtio_virtq *vq = (struct virtio_virtq *) virtq_paddr;
-	uint16_t used_index = vq->used.index;
+static struct virtio_virtq *virtq_init(unsigned index)
+{
+    size_t size = align_up(sizeof(struct virtio_virtq), PAGE_SIZE);
+    paddr_t virtq_paddr = alloc_pages(size / PAGE_SIZE);
+    struct virtio_virtq *vq = (struct virtio_virtq *) (uintptr_t) virtq_paddr;
+
     vq->queue_index = index;
-    vq->used_index = (volatile uint16_t *) &used_index;
-    virtio_reg_write32(VIRTIO_REG_QUEUE_SEL, index);
-    virtio_reg_write32(VIRTIO_REG_QUEUE_NUM, VIRTQ_ENTRY_NUM);
-    virtio_reg_write32(VIRTIO_REG_QUEUE_PFN, virtq_paddr / PAGE_SIZE);
+    vq->used_index = &vq->used.index;
+    vq->last_used_index = 0;
+
+    write16(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_QUEUE_SEL, index);
+    uint16_t queue_num = read16(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_QUEUE_NUM);
+    if (queue_num != VIRTQ_ENTRY_NUM)
+        PANIC("virtio: unexpected queue size %d", queue_num);
+
+    write32(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_QUEUE_PFN,
+            virt_to_phys(virtq_paddr) / PAGE_SIZE);
     return vq;
 }
 
-void virtio_blk_init(void) {
-    if (virtio_reg_read32(VIRTIO_REG_MAGIC) != 0x74726976)
-        PANIC("virtio: invalid magic value");
-    if (virtio_reg_read32(VIRTIO_REG_VERSION) != 1)
-        PANIC("virtio: invalid version");
-    if (virtio_reg_read32(VIRTIO_REG_DEVICE_ID) != VIRTIO_DEVICE_BLK)
-        PANIC("virtio: invalid device id");
+void virtio_blk_init(void)
+{
+    int bus, dev;
+    if (!pci_find_virtio_blk(&bus, &dev))
+        PANIC("virtio: blk device not found");
 
-    virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, 0);
-    virtio_reg_fetch_and_or32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_ACK);
-    virtio_reg_fetch_and_or32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER);
-    virtio_reg_write32(VIRTIO_REG_PAGE_SIZE, PAGE_SIZE);
+    /* Disable decoding, program BAR0, then enable I/O + bus mastering. */
+    pci_write32(bus, dev, 0, 0x04, 0);
+    pci_write32(bus, dev, 0, 0x10, 0xffffffff);
+    uint32_t bar_mask = pci_read32(bus, dev, 0, 0x10);
+    uint32_t bar_size = ~(bar_mask & ~0x3UL) + 1;
+    if (bar_size > 0x1000)
+        PANIC("virtio: unexpected BAR0 size 0x%x", bar_size);
+    pci_write32(bus, dev, 0, 0x10, VIRTIO_BLK_IO_BAR);
+    pci_write32(bus, dev, 0, 0x04, 0x7);
+
+    /* Reset the device. */
+    write8(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_STATUS, 0);
+    while (read8(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_STATUS) != 0)
+        ;
+
+    write8(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_STATUS, VIRTIO_STATUS_ACK);
+    write8(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_STATUS,
+           VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER);
+
+    /* No optional features are needed. */
+    write32(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_GUEST_FEATURES, 0);
+
     blk_request_vq = virtq_init(0);
-    virtio_reg_write32(VIRTIO_REG_DEVICE_STATUS, VIRTIO_STATUS_DRIVER_OK);
 
-    blk_capacity = virtio_reg_read64(VIRTIO_REG_DEVICE_CONFIG + 0) * SECTOR_SIZE;
-    printf("virtio-blk: capacity is %d bytes\n", (int)blk_capacity);
+    write8(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_STATUS,
+           VIRTIO_STATUS_ACK | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_DRIVER_OK);
+
+    uint32_t cap_lo = read32(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_CONFIG);
+    uint32_t cap_hi = read32(VIRTIO_BLK_IO_ADDR + VIRTIO_PCI_CONFIG + 4);
+    blk_capacity = (((uint64_t) cap_hi << 32) | cap_lo) * SECTOR_SIZE;
+    printf("virtio-blk: capacity is %d bytes\n", (int) blk_capacity);
 
     blk_req_paddr = alloc_pages(align_up(sizeof(*blk_req), PAGE_SIZE) / PAGE_SIZE);
-    blk_req = (struct virtio_blk_req *) blk_req_paddr;
+    blk_req = (struct virtio_blk_req *) (uintptr_t) blk_req_paddr;
 }
 
-void read_write_disk(void *buf, unsigned sector, int is_write) {
+void read_write_disk(void *buf, unsigned sector, int is_write)
+{
     if (sector >= blk_capacity / SECTOR_SIZE) {
         printf("virtio: tried to read/write sector=%d, but capacity is %d\n",
-              sector, blk_capacity / SECTOR_SIZE);
+              sector, (int) (blk_capacity / SECTOR_SIZE));
         return;
     }
 
@@ -140,17 +206,19 @@ void read_write_disk(void *buf, unsigned sector, int is_write) {
         memcpy(blk_req->data, buf, SECTOR_SIZE);
 
     struct virtio_virtq *vq = blk_request_vq;
-    vq->descs[0].addr = blk_req_paddr;
+    vq->descs[0].addr = virt_to_phys(blk_req_paddr);
     vq->descs[0].len = sizeof(uint32_t) * 2 + sizeof(uint64_t);
     vq->descs[0].flags = VIRTQ_DESC_F_NEXT;
     vq->descs[0].next = 1;
 
-    vq->descs[1].addr = blk_req_paddr + offsetof(struct virtio_blk_req, data);
+    vq->descs[1].addr = virt_to_phys(blk_req_paddr) +
+                        offsetof(struct virtio_blk_req, data);
     vq->descs[1].len = SECTOR_SIZE;
     vq->descs[1].flags = VIRTQ_DESC_F_NEXT | (is_write ? 0 : VIRTQ_DESC_F_WRITE);
     vq->descs[1].next = 2;
 
-    vq->descs[2].addr = blk_req_paddr + offsetof(struct virtio_blk_req, status);
+    vq->descs[2].addr = virt_to_phys(blk_req_paddr) +
+                        offsetof(struct virtio_blk_req, status);
     vq->descs[2].len = sizeof(uint8_t);
     vq->descs[2].flags = VIRTQ_DESC_F_WRITE;
 
@@ -220,7 +288,7 @@ void fs_flush(void) {
     for (unsigned sector = 0; sector < sizeof(disk) / SECTOR_SIZE; sector++)
         read_write_disk(&disk[sector * SECTOR_SIZE], sector, true);
 
-    printf("wrote %d bytes to disk\n", sizeof(disk));
+    printf("wrote %d bytes to disk\n", (int) sizeof(disk));
 }
 
 void fs_init(void) {
@@ -242,7 +310,7 @@ void fs_init(void) {
         strcpy(file->name, header->name);
         memcpy(file->data, header->data, filesz);
         file->size = filesz;
-        printf("file: %s, size=%d\n", file->name, file->size);
+        printf("file: %s, size=%d\n", file->name, (int) file->size);
 
         off += align_up(sizeof(struct tar_header) + filesz, SECTOR_SIZE);
     }
@@ -259,13 +327,15 @@ struct file *fs_lookup(const char *filename) {
 }
 
 void putchar(char ch) {
-  while(!(read8(UART_BASE_ADDR + UART_REG_LSR) & LSR_TFE));
-  write8(UART_BASE_ADDR + 0, ch);
+    while (!(read8(UART_BASE + UART_REG_LSR) & LSR_TFE))
+        ;
+    write8(UART_BASE, ch);
 }
 
-char getchar(void) {
-  while(!(read8(UART_BASE_ADDR + UART_REG_LSR) & LSR_DR));
-  return read8(UART_BASE_ADDR + 0);
+int getchar(void) {
+    while (!(read8(UART_BASE + UART_REG_LSR) & LSR_DR))
+        ;
+    return read8(UART_BASE);
 }
 
 struct process *create_process(const void *image, size_t image_size)
@@ -282,43 +352,41 @@ struct process *create_process(const void *image, size_t image_size)
     if (!proc)
         PANIC("no free process slots");
 
+    /*
+     * Build the initial kernel context for switch_context():
+     * ra, tp, fp, s0..s8.  s0 carries the initial user stack pointer.
+     */
+    uint64_t user_sp = USER_BASE + align_up(image_size, 16);
     uint64_t *sp = (uint64_t *) &proc->stack[sizeof(proc->stack)];
-    *--sp = 0;                      // s8
-    *--sp = 0;                      // s7
-    *--sp = 0;                      // s6
-    *--sp = 0;                      // s5
-    *--sp = 0;                      // s4
-    *--sp = 0;                      // s3
-    *--sp = 0;                      // s2
-    *--sp = 0;                      // s1
-    *--sp = 0;                      // s0
+    *--sp = 0;                 // s8
+    *--sp = 0;                 // s7
+    *--sp = 0;                 // s6
+    *--sp = 0;                 // s5
+    *--sp = 0;                 // s4
+    *--sp = 0;                 // s3
+    *--sp = 0;                 // s2
+    *--sp = 0;                 // s1
+    *--sp = user_sp;           // s0: user stack top
+    *--sp = 0;                 // fp
+    *--sp = 0;                 // tp
     *--sp = (uint64_t) user_entry;  // ra
 
-    uint64_t *page_table = (uint64_t *) alloc_pages(1);
+    uint64_t *pgd = (uint64_t *) alloc_pages(1);
 
-    // Kernel pages.
-    for (paddr_t paddr = (paddr_t) __kernel_base;
-         paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE)
-        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
-
-    // virtio-blk
-    map_page(page_table, VIRTIO_BLK_PADDR, VIRTIO_BLK_PADDR, PAGE_R | PAGE_W);
-
-    // User pages.
+    // User pages. The kernel runs through the direct mapping windows,
+    // so kernel pages do not need to be mapped here.
     for (uint64_t off = 0; off < image_size; off += PAGE_SIZE) {
         paddr_t page = alloc_pages(1);
         size_t remaining = image_size - off;
         size_t copy_size = PAGE_SIZE <= remaining ? PAGE_SIZE : remaining;
         memcpy((void *) page, image + off, copy_size);
-        map_page(page_table, USER_BASE + off, page,
-                 PAGE_U | PAGE_R | PAGE_W | PAGE_X);
+        map_page(pgd, USER_BASE + off, virt_to_phys(page), PAGE_USER);
     }
 
-    // 初始化字段
     proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint64_t) sp;
-    proc->page_table = page_table;
+    proc->page_table = pgd;
     return proc;
 }
 
@@ -338,15 +406,11 @@ void yield(void) {
     struct process *prev = current_proc;
     current_proc = next;
 
-//    __asm__ __volatile__(
-//        "sfence.vma\n"
-//        "csrw satp, %[satp]\n"
-//        "sfence.vma\n"   # LA, invtlb
-//        "csrw sscratch, %[sscratch]\n"
-//        :
-//        : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table / PAGE_SIZE)),
-//          [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
-//    );
+    // Switch the page table and the kernel stack used by the trap handler.
+    WRITE_CSR(LOONGARCH_CSR_PGDL, virt_to_phys(next->page_table));
+    WRITE_CSR(LOONGARCH_CSR_PGDH, virt_to_phys(next->page_table));
+    WRITE_CSR(LOONGARCH_CSR_SAVE1, (uint64_t) &next->stack[sizeof(next->stack)]);
+    invtlb_all();
 
     switch_context(&prev->sp, &next->sp);
 }
@@ -357,15 +421,7 @@ void handle_syscall(struct trap_frame *f) {
             putchar(f->a0);
             break;
         case SYS_GETCHAR:
-            while (1) {
-                char ch = getchar();
-                if (ch >= 0) {
-                    f->a0 = ch;
-                    break;
-                }
-
-                yield();
-            }
+            f->a0 = (unsigned char) getchar();
             break;
         case SYS_EXIT:
             printf("process %d exited\n", current_proc->pid);
@@ -405,94 +461,50 @@ void handle_syscall(struct trap_frame *f) {
 
 void handle_trap(struct trap_frame *f)
 {
-	//uint64_t ecfg = READ_CSR(LOONGARCH_CSR_ECFG);
-	uint64_t estat = READ_CSR(LOONGARCH_CSR_ESTAT);
-	uint64_t era = READ_CSR(LOONGARCH_CSR_ERA);
-	uint64_t badv = READ_CSR(LOONGARCH_CSR_BADV);
-	uint64_t badi = READ_CSR(LOONGARCH_CSR_BADI);
+    uint64_t estat = READ_CSR(LOONGARCH_CSR_ESTAT);
+    uint64_t era = READ_CSR(LOONGARCH_CSR_ERA);
+    uint64_t badv = READ_CSR(LOONGARCH_CSR_BADV);
+    uint64_t badi = READ_CSR(LOONGARCH_CSR_BADI);
 
-	uint8_t ecode = (estat & ESTAT_ECOCD_MASK) >> 16;
-	uint8_t esubcode = (estat & ESTAT_ESUBCOCD_MASK) >> 22;
+    uint8_t ecode = (estat & ESTAT_ECOCD_MASK) >> 16;
+    uint8_t esubcode = (estat & ESTAT_ESUBCOCD_MASK) >> 22;
 
-	if(ecode == ESTAT_ECODE_SYS) {
-		printf("syscall\n");
-		handle_syscall(f);
-		era += 4;
-	} else {
-		PANIC("unexpected trap, estat=%b, ecode=%x, esubcode=%x\n\tera=0x%x, badv=0x%x, badi=0x%x\n", estat, ecode, esubcode, era, badv, badi);
-	}
-	printf("fininsh haldle_trap\n");
-
-	//if (scause == SCAUSE_ECALL) {
-	//    handle_syscall(f);
-	//    user_pc += 4;
-	//} else {
-	//    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
-	//}
-	WRITE_CSR(LOONGARCH_CSR_ERA, era);
-}
-
-///////////////////////////////
-
-void delay(void) {
-    for (int i = 0; i < 30000000; i++)
-        __asm__ __volatile__("nop"); // 什么都不做
-}
-
-struct process *proc_a;
-struct process *proc_b;
-
-void proc_a_entry(void) {
-    printf("starting process A\n");
-    while (1) {
-        putchar('A');
-        yield();
-        //switch_context(&proc_a->sp, &proc_b->sp);
-        delay();
+    if (ecode == ESTAT_ECODE_SYS) {
+        handle_syscall(f);
+        era += 4;
+        WRITE_CSR(LOONGARCH_CSR_ERA, era);
+    } else {
+        PANIC("unexpected trap, estat=%x, ecode=%x, esubcode=%x\n"
+              "\tera=%x, badv=%x, badi=%x",
+              (unsigned) estat, ecode, esubcode,
+              (unsigned) era, (unsigned) badv, (unsigned) badi);
     }
 }
-
-void proc_b_entry(void) {
-    printf("starting process B\n");
-    while (1) {
-        putchar('B');
-        //switch_context(&proc_b->sp, &proc_a->sp);
-        yield();
-        delay();
-    }
-}
-
-///////////////////////////////
 
 void kernel_main(void) {
     memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
     printf("\n1000 Lines OS on LoongArch!\n\n");
-    WRITE_CSR(LOONGARCH_CSR_EENTRY, (uint64_t) kernel_entry);
 
-	// test begin
-    paddr_t paddr0 = alloc_pages(2);
-    paddr_t paddr1 = alloc_pages(1);
-    printf("alloc_pages test: paddr0=%x\n", paddr0);
-    printf("alloc_pages test: paddr1=%x\n", paddr1);
+    // Exception vector table (ECFG.VS = 7 -> 512-byte vectors).
+    WRITE_CSR(LOONGARCH_CSR_EENTRY, (uint64_t) exception_vectors);
+    WRITE_CSR(LOONGARCH_CSR_ECFG, 7 << 16);
 
-    uint32_t value;
-    __asm__ __volatile__ ("cpucfg %0, $zero" : "=&r" (value));
+    // Page table walker geometry for the TLB refill handler.
+    WRITE_CSR(LOONGARCH_CSR_PWCL,
+              PT_PTE_SHIFT | ((PT_PTE_SHIFT - 3) << 5) |
+              (PT_PMD_SHIFT << 10) | ((PT_PTE_SHIFT - 3) << 15));
+    WRITE_CSR(LOONGARCH_CSR_PWCH,
+              PT_PGD_SHIFT | ((PT_PTE_SHIFT - 3) << 6));
+    WRITE_CSR(LOONGARCH_CSR_TLBRENTRY, (uint64_t) tlb_refill);
 
-    printf("PRID = %x\n", value);
-
-	//    proc_a = create_process((uint64_t) proc_a_entry);
-	//    proc_b = create_process((uint64_t) proc_b_entry);
-	//    proc_a_entry();
-
-//   __asm__ __volatile__("break 1"); // 测试异常
-//    virtio_blk_init();
-//    fs_init();
+    virtio_blk_init();
+    fs_init();
 
     idle_proc = create_process(NULL, 0);
     idle_proc->pid = 0; // idle
     current_proc = idle_proc;
 
-//    create_process(_binary_shell_bin_start, (size_t) _binary_shell_bin_size);
+    create_process(_binary_shell_bin_start, (size_t) _binary_shell_bin_size);
     yield();
 
     PANIC("switched to idle process");

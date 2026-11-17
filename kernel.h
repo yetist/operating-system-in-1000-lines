@@ -5,58 +5,114 @@
 #define PROC_UNUSED   0
 #define PROC_RUNNABLE 1
 #define PROC_EXITED   2
-#define SATP_SV32 (1u << 31)
 
-#define SSTATUS_SPIE (1 << 5)
-#define SSTATUS_SUM  (1 << 18)
+/* LoongArch control/status registers. */
+#define LOONGARCH_CSR_CRMD      0x0
+#define LOONGARCH_CSR_PRMD      0x1
+#define LOONGARCH_CSR_EUEN      0x2
+#define LOONGARCH_CSR_ECFG      0x4
+#define LOONGARCH_CSR_ESTAT     0x5
+#define LOONGARCH_CSR_ERA       0x6
+#define LOONGARCH_CSR_BADV      0x7
+#define LOONGARCH_CSR_BADI      0x8
+#define LOONGARCH_CSR_EENTRY    0xc
+#define LOONGARCH_CSR_TLBIDX    0x10
+#define LOONGARCH_CSR_TLBEHI    0x11
+#define LOONGARCH_CSR_TLBELO0   0x12
+#define LOONGARCH_CSR_TLBELO1   0x13
+#define LOONGARCH_CSR_ASID      0x18
+#define LOONGARCH_CSR_PGDL      0x19
+#define LOONGARCH_CSR_PGDH      0x1a
+#define LOONGARCH_CSR_PGD       0x1b
+#define LOONGARCH_CSR_PWCL      0x1c
+#define LOONGARCH_CSR_PWCH      0x1d
+#define LOONGARCH_CSR_SAVE0     0x30
+#define LOONGARCH_CSR_SAVE1     0x31
+#define LOONGARCH_CSR_TLBRENTRY 0x88
+#define LOONGARCH_CSR_TLBRERA   0x8a
+#define LOONGARCH_CSR_TLBRSAVE  0x8b
+#define LOONGARCH_CSR_TLBREHI   0x8e
+#define LOONGARCH_CSR_TLBRPRMD  0x8f
 
 #define ESTAT_ECOCD_MASK    0x3f0000
 #define ESTAT_ESUBCOCD_MASK 0x7fc00000
 #define ESTAT_ECODE_SYS     0xb
 
-#define PAGE_V    (1 << 0)
-#define PAGE_R    (1 << 1)
-#define PAGE_W    (1 << 2)
-#define PAGE_X    (1 << 3)
-#define PAGE_U    (1 << 4)
+/*
+ * Page table entries (LoongArch TLB / PTE format).
+ *
+ *   0     V        valid
+ *   1     D        dirty (writable)
+ *   3:2   PLV      privilege level
+ *   5:4   MAT      memory access type (1 = coherent cached)
+ *   6     G        global
+ *   7     P        present (software walker)
+ *   8     W        writable (software walker)
+ *   47:12 PPN      physical page number
+ *   61    NR       no read
+ *   62    NX       no execute
+ *   63    RPLV
+ */
+#define PAGE_V       (1UL << 0)
+#define PAGE_D       (1UL << 1)
+#define PAGE_PLV0    (0UL << 2)
+#define PAGE_PLV3    (3UL << 2)
+#define PAGE_MAT_CC  (1UL << 4)
+#define PAGE_G       (1UL << 6)
+#define PAGE_P       (1UL << 7)
+#define PAGE_W       (1UL << 8)
+#define PAGE_NX      (1UL << 62)
+
+/* Internal pages of the kernel (accessed through DMW1). */
+#define PAGE_KERNEL (PAGE_V | PAGE_D | PAGE_MAT_CC | PAGE_G | PAGE_P | PAGE_W)
+/* User pages, accessible from PLV3. */
+#define PAGE_USER   (PAGE_V | PAGE_D | PAGE_MAT_CC | PAGE_P | PAGE_W | PAGE_PLV3)
+
+/* Page table geometry: 3 levels, 9 bits each, 4KiB pages. */
+#define PT_PGD_SHIFT 30
+#define PT_PMD_SHIFT 21
+#define PT_PTE_SHIFT 12
+#define PT_INDEX_BITS 9
+
 #define USER_BASE 0x1000000
+
 #define FILES_MAX   2
 #define DISK_MAX_SIZE     align_up(sizeof(struct file) * FILES_MAX, SECTOR_SIZE)
 #define SECTOR_SIZE       512
-#define VIRTQ_ENTRY_NUM   16
+
+#define VIRTQ_ENTRY_NUM   256
 #define VIRTIO_DEVICE_BLK 2
-#define VIRTIO_BLK_PADDR  0x10001000
-#define VIRTIO_REG_MAGIC         0x00
-#define VIRTIO_REG_VERSION       0x04
-#define VIRTIO_REG_DEVICE_ID     0x08
-#define VIRTIO_REG_PAGE_SIZE     0x28
-#define VIRTIO_REG_QUEUE_SEL     0x30
-#define VIRTIO_REG_QUEUE_NUM_MAX 0x34
-#define VIRTIO_REG_QUEUE_NUM     0x38
-#define VIRTIO_REG_QUEUE_PFN     0x40
-#define VIRTIO_REG_QUEUE_NOTIFY  0x50
-#define VIRTIO_REG_DEVICE_STATUS 0x70
-#define VIRTIO_REG_DEVICE_CONFIG 0x100
-#define VIRTIO_STATUS_ACK       1
-#define VIRTIO_STATUS_DRIVER    2
-#define VIRTIO_STATUS_DRIVER_OK 4
-#define VIRTQ_DESC_F_NEXT          1
-#define VIRTQ_DESC_F_WRITE         2
-#define VIRTQ_AVAIL_F_NO_INTERRUPT 1
 #define VIRTIO_BLK_T_IN  0
 #define VIRTIO_BLK_T_OUT 1
+
+/* Legacy virtio-pci register offsets (BAR0, I/O space). */
+#define VIRTIO_PCI_HOST_FEATURES   0x00
+#define VIRTIO_PCI_GUEST_FEATURES  0x04
+#define VIRTIO_PCI_QUEUE_PFN       0x08
+#define VIRTIO_PCI_QUEUE_NUM       0x0c
+#define VIRTIO_PCI_QUEUE_SEL       0x0e
+#define VIRTIO_PCI_QUEUE_NOTIFY    0x10
+#define VIRTIO_PCI_STATUS          0x12
+#define VIRTIO_PCI_ISR             0x13
+#define VIRTIO_PCI_CONFIG          0x14
+#define VIRTIO_STATUS_ACK          1
+#define VIRTIO_STATUS_DRIVER       2
+#define VIRTIO_STATUS_DRIVER_OK    4
+
+#define VIRTQ_DESC_F_NEXT          1
+#define VIRTQ_DESC_F_WRITE         2
+
+/* PCI host bridge on the QEMU loongarch "virt" machine. */
+#define PCI_ECAM_BASE   0x20000000UL
+#define PCI_IO_BASE     0x18004000UL
+#define PCI_IO_WINDOW   0x100UL
 
 struct process {
     int pid; // 0 if it's an idle process
     int state; // PROC_UNUSED, PROC_RUNNABLE, PROC_EXITED
     vaddr_t sp; // kernel stack pointer
     uint64_t *page_table; // points to first level page table
-    uint8_t stack[8192]; // kernel stack
-};
-
-struct sbiret {
-    long error;
-    long value;
+    uint8_t stack[8192] __attribute__((aligned(16))); // kernel stack
 };
 
 struct trap_frame {
@@ -99,24 +155,24 @@ struct virtq_desc {
     uint32_t len;
     uint16_t flags;
     uint16_t next;
-} __attribute__((packed));
+};
 
 struct virtq_avail {
     uint16_t flags;
     uint16_t index;
     uint16_t ring[VIRTQ_ENTRY_NUM];
-} __attribute__((packed));
+};
 
 struct virtq_used_elem {
     uint32_t id;
     uint32_t len;
-} __attribute__((packed));
+};
 
 struct virtq_used {
     uint16_t flags;
     uint16_t index;
     struct virtq_used_elem ring[VIRTQ_ENTRY_NUM];
-} __attribute__((packed));
+};
 
 struct virtio_virtq {
     struct virtq_desc descs[VIRTQ_ENTRY_NUM];
@@ -125,7 +181,7 @@ struct virtio_virtq {
     int queue_index;
     volatile uint16_t *used_index;
     uint16_t last_used_index;
-} __attribute__((packed));
+};
 
 struct virtio_blk_req {
     uint32_t type;
@@ -169,15 +225,20 @@ struct file {
 #define READ_CSR(reg)                                                          \
     ({                                                                         \
         unsigned long __tmp;                                                   \
-        __asm__ __volatile__("csrrd %0, " TO_STR(reg) : "=r"(__tmp));                  \
+        __asm__ __volatile__("csrrd %0, " TO_STR(reg) : "=r"(__tmp));          \
         __tmp;                                                                 \
     })
 
 #define WRITE_CSR(reg, value)                                                  \
     do {                                                                       \
         uint64_t __tmp = (value);                                              \
-        __asm__ __volatile__("csrwr %0, " TO_STR(reg) ::"r"(__tmp));                \
+        __asm__ __volatile__("csrwr %0, " TO_STR(reg) ::"r"(__tmp));           \
     } while (0)
+
+static inline void invtlb_all(void)
+{
+    __asm__ __volatile__("invtlb 0x0, $zero, $zero" ::: "memory");
+}
 
 #define PANIC(fmt, ...)                                                        \
     do {                                                                       \
