@@ -16,6 +16,8 @@ SECTIONS {
 
     .text :{
         KEEP(*(.text.boot));
+        KEEP(*(.text.vectors));
+        KEEP(*(.text.tlb_refill));
         *(.text .text.*);
     } : text_phdr
 
